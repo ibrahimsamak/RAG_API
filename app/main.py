@@ -15,12 +15,13 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.core.config import get_settings
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, request_id_ctx
 from app.core.errors import DomainError, domain_error_handler
 from app.core.rate_limit import limiter
 from app.api import auth, users, documents, chat
 
 log = logging.getLogger(__name__)
+access_log = logging.getLogger("app.access")
 
 
 @asynccontextmanager
@@ -69,14 +70,20 @@ async def validation_handler(request: Request, exc: RequestValidationError):
 @app.middleware("http")
 async def add_process_time_and_request_id(request: Request, call_next):
     request_id = str(uuid.uuid4())
+    token = request_id_ctx.set(request_id)   # tag all logs during this request
     start = time.perf_counter()
-
-    response = await call_next(request)      # <- the rest of the pipeline + route
-
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    response.headers["X-Request-ID"] = request_id
-    response.headers["X-Process-Time-ms"] = f"{elapsed_ms:.2f}"
-    return response
+    try:
+        response = await call_next(request)  # <- the rest of the pipeline + route
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Process-Time-ms"] = f"{elapsed_ms:.2f}"
+        access_log.info(
+            "%s %s -> %s (%.2fms)",
+            request.method, request.url.path, response.status_code, elapsed_ms,
+        )
+        return response
+    finally:
+        request_id_ctx.reset(token)
 
 
 app.add_middleware(

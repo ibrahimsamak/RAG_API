@@ -10,3 +10,4 @@ __pycache__/
 .env
 chroma_store/
 audit.log
+logs/
