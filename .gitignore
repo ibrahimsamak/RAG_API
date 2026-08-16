@@ -5,3 +5,8 @@ __pycache__/
 
 # Virtual env
 .venv/
+
+# Secrets & runtime artifacts
+.env
+chroma_store/
+audit.log
