@@ -1,29 +1,70 @@
-import uuid, time
+import time
+import uuid
+import logging
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, status, Request
+import chromadb
+from openai import AsyncOpenAI
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
-from enum import Enum
-from pydantic import BaseModel
-from datetime import datetime, timezone
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-from app.schemas.user import UserCreate, UserOut
-from app.api import users
-from app.api import items
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.core.errors import DomainError, domain_error_handler
+from app.api import users, items, auth, documents, chat
 
-app = FastAPI(title="AI API")
-@app.middleware("http")
-async def add_proccess_time_and_request_id(req: Request, call_next):
-    request_id = str(uuid.uuid4())
-    start = time.perf_counter()
-    response = await call_next(req)
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    # app/main.py
-import time, uuid
-from fastapi import FastAPI, Request
+log = logging.getLogger(__name__)
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ---- startup: load heavy clients ONCE (Day 3 lifespan concept) ----
+    configure_logging()
+    settings = get_settings()
+
+    # vector store — persistent client + collection loaded once
+    app.state.chroma = chromadb.PersistentClient(path="./chroma_store")
+    app.state.collection = app.state.chroma.get_or_create_collection("documents")
+
+    # async LLM client (shares one httpx connection pool). A placeholder key keeps
+    # the app bootable without credentials; real calls fail with a 401 until a key
+    # is set in APP_OPENAI_API_KEY.
+    app.state.llm = AsyncOpenAI(api_key=settings.openai_api_key or "sk-placeholder-not-set")
+    if not settings.openai_api_key:
+        log.warning("APP_OPENAI_API_KEY is not set — /chat and ingestion will fail until it is.")
+
+    log.info("startup complete")
+    yield
+    # ---- shutdown ----
+    await app.state.llm.close()
+    log.info("shutdown complete")
+
+
+app = FastAPI(lifespan=lifespan, title="AI RAG API", version="1.0.0")
+
+# rate limiting (Day 5) — must come after `app` exists
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# uniform error envelope for all domain errors (Day 3)
+app.add_exception_handler(DomainError, domain_error_handler)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"error": {"code": "validation_error", "details": exc.errors()}},
+    )
+
 
 @app.middleware("http")
 async def add_process_time_and_request_id(request: Request, call_next):
@@ -37,6 +78,7 @@ async def add_process_time_and_request_id(request: Request, call_next):
     response.headers["X-Process-Time-ms"] = f"{elapsed_ms:.2f}"
     return response
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,59 +88,26 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(items.router)
+app.include_router(documents.router)
+app.include_router(chat.router)
 
 
-@app.get("/health")
+def write_audit_log(user_id: int, action: str):
+    # runs AFTER the response is returned to the client
+    with open("audit.log", "a") as f:
+        f.write(f"{user_id} {action}\n")
+
+
+@app.post("/orders")
+def create_order(user_id: int, background: BackgroundTasks):
+    order = {"id": 123}
+    background.add_task(write_audit_log, user_id, "order_created")
+    return order
+
+
+@app.get("/health", tags=["ops"])
 def health():
-    return {"status": "OK"}
-
-
-
-#### Old implementation ####
-
-# _fake_db: dict[int, dict] = {}
-# _seq = 0
-# class SortOrder(str, Enum):
-#     asc='asc'
-#     desc='desc'
-
-
-# class ItemUpdate(BaseModel):
-#     name: str
-#     price: float
-
-
-# @app.get("/users/{user_id}")
-# def get_user(user_id):
-#     return {"id": user_id}
-
-
-# @app.get("/users")
-# def list_user(page:int = Query(1, ge=1), 
-#               limit:int = Query(10, ge=1, le=1000), 
-#               q:str | None = Query(None, min_length=2), 
-#               order:SortOrder = SortOrder.desc):
-
-#     return {
-#         "page": page,
-#         "limit": limit, 
-#         "q": q,
-#         "order": order
-#     }
-
-
-# @app.post("/users", response_model=UserOut, response_model_exclude={"email"}, status_code=status.HTTP_201_CREATED)
-# def create_user(payload: UserCreate):
-#     global _seq
-#     _seq += 1
-#     row = {
-#         "id": _seq,
-#         "name": payload.name,
-#         "email": payload.email,
-#         "created_at": datetime.now(timezone.utc),
-#         # password intentionally not stored here — hashing comes on Day 5
-#     }
-#     _fake_db[_seq] = row
-#     return row
+    return {"status": "ok"}
