@@ -8,7 +8,7 @@ A production-shaped **FastAPI** service that ends in a real **Retrieval-Augmente
 
 ```
 FastAPI (async)  ·  Pydantic v2  ·  SQLAlchemy 2.0 (async)  ·  Alembic
-PostgreSQL (asyncpg)  ·  Redis  ·  JWT / OAuth2  ·  slowapi (rate limiting)
+PostgreSQL (asyncpg)  ·  JWT / OAuth2  ·  slowapi (rate limiting)
 ChromaDB (vector store)  ·  OpenAI (embeddings + streaming chat)  ·  Docker
 ```
 
@@ -59,7 +59,7 @@ app/
 ├── models/                 # SQLAlchemy 2.0 typed ORM (base, user, document)
 ├── schemas/                # Pydantic v2 request/response contracts (user, document)
 ├── repositories/           # data access (user_repo, document_repo)
-├── services/               # business logic (user_service, rag_service, cache)
+├── services/               # business logic (user_service, rag_service)
 └── db/
     └── session.py          # async engine + get_db unit-of-work
 alembic/                    # migrations (env.py reads the app URL, sync driver)
@@ -93,7 +93,7 @@ Interactive docs at `/docs` (Swagger) and `/redoc`.
 
 **Async unit-of-work** — `get_db` yields one `AsyncSession` per request that commits on success and rolls back on error. Repositories `flush()` (assign PKs); the commit boundary lives in `get_db`.
 
-**Auth** — OAuth2 password flow, bcrypt hashing, short-lived **access** + long-lived **refresh** JWTs with a `type` claim so a refresh token can't be used as an access token. `require_roles("admin")` is a dependency factory for RBAC (401 = unauthenticated, 403 = forbidden). Login is rate-limited via `slowapi`.
+**Auth** — OAuth2 password flow, bcrypt hashing, short-lived **access** + long-lived **refresh** JWTs with a `type` claim so a refresh token can't be used as an access token. `require_roles("admin")` is a dependency factory for RBAC (401 = unauthenticated, 403 = forbidden). `slowapi` rate-limits the sensitive endpoints — `/auth/login` (5/min), `/auth/refresh` (10/min), and the expensive `/chat` (20/min) — returning `429` when exceeded.
 
 **Cross-cutting** — request-ID + timing middleware (`X-Request-ID`, `X-Process-Time-ms`), a uniform `{"error": {...}}` envelope for domain and validation errors, and JSON structured logging wired in `lifespan`.
 
@@ -119,11 +119,10 @@ Create `.env` (git-ignored):
 ```env
 APP_DATABASE_URL=postgresql+asyncpg://app:app@localhost:5432/appdb
 APP_SECRET_KEY=replace_with_a_64_char_random_secret
-APP_REDIS_URL=redis://localhost:6379/0
 APP_OPENAI_API_KEY=sk-...        # required for real /chat and ingestion
 ```
 
-### 2. Run with Docker (API + Postgres + Redis)
+### 2. Run with Docker (API + Postgres)
 
 ```bash
 docker compose up --build

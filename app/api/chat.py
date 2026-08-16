@@ -1,19 +1,22 @@
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user, get_rag_service
 from app.services.rag_service import RagService
+from app.core.rate_limit import limiter
 from app.models.user import User
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("")
+@limiter.limit("20/minute")           # expensive LLM endpoint
 async def chat(
+    request: Request,
     query: str,
-    user: User = Depends(get_current_user),          # auth from Day 5
+    user: User = Depends(get_current_user),          # auth-protected
     rag: RagService = Depends(get_rag_service),
 ):
     async def event_stream():

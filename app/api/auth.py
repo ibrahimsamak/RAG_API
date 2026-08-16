@@ -1,13 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from app.api.deps import get_user_service
 from app.services.user_service import UserService
+from app.core.rate_limit import limiter
 from app.core.security import (
     verify_password, create_access_token, create_refresh_token, decode_token,
 )
 router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/login")
+@limiter.limit("5/minute")            # protect auth from brute force
 async def login(
+    request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
     svc: UserService = Depends(get_user_service),
 ):
@@ -21,7 +24,8 @@ async def login(
     }
 
 @router.post("/refresh")
-async def refresh(refresh_token: str):
+@limiter.limit("10/minute")
+async def refresh(request: Request, refresh_token: str):
     try:
         payload = decode_token(refresh_token)
     except ValueError:
