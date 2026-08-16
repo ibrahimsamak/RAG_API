@@ -1,5 +1,4 @@
-from passlib.context import CryptContext
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+import bcrypt
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 
@@ -10,10 +9,14 @@ REFRESH_TTL = timedelta(days=7)
 
 
 def hash_password(raw: str) -> str:
-    return pwd_context.hash(raw)
+    # bcrypt operates on the first 72 bytes; truncate explicitly so long
+    # passwords don't raise on bcrypt >= 4.1.
+    pw = raw.encode("utf-8")[:72]
+    return bcrypt.hashpw(pw, bcrypt.gensalt()).decode("utf-8")
 
 def verify_password(raw: str, hashed: str) -> bool:
-    return pwd_context.verify(raw, hashed)
+    pw = raw.encode("utf-8")[:72]
+    return bcrypt.checkpw(pw, hashed.encode("utf-8"))
 
 
 def _create_token(sub: str, ttl: timedelta, token_type: str, extra: dict | None = None) -> str:
